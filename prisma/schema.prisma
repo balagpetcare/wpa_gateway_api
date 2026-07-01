@@ -1,0 +1,741 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MerchantStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum MerchantEnvironment {
+  SANDBOX
+  PRODUCTION
+}
+
+enum MerchantApiKeyStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum MerchantDomainStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SessionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  EXPIRED
+  CANCELLED
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum CoverageType {
+  LOCAL
+  REGIONAL
+  GLOBAL
+}
+
+enum InternationalDisplayPolicy {
+  SHOW_FIRST
+  SHOW_AFTER_LOCAL
+  HIDE_WHEN_LOCAL_EXISTS
+  HIDE_ALWAYS
+}
+
+enum ProviderName {
+  RAZORPAY
+  PAYU
+  CCAVENUE
+  STRIPE
+  EPS
+  BKASH
+  NAGAD
+  SSLCOMMERZ
+  CASHFREE
+  PAYPAL
+  AUTHORIZE_NET
+}
+
+enum CredentialScope {
+  PLATFORM
+  MERCHANT
+}
+
+enum CredentialTestStatus {
+  NOT_TESTED
+  PASSED
+  FAILED
+  BLOCKED
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  SUPPORT
+  AUDITOR
+  DEVELOPER
+}
+
+enum AuditActorType {
+  ADMIN
+  MERCHANT
+  SYSTEM
+}
+
+enum DeliveryStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+}
+
+enum RateSource {
+  MANUAL
+  PROVIDER_API
+  SYSTEM
+}
+
+enum RateUpdateMode {
+  MANUAL
+  AUTOMATIC
+  HYBRID
+}
+
+enum RoundingMode {
+  NONE
+  ROUND_2_DECIMALS
+  ROUND_NEAREST_INTEGER
+  ROUND_UP
+  ROUND_DOWN
+}
+
+enum PaymentPurpose {
+  DONATION
+  MEMBERSHIP
+  CAMPAIGN
+  MARKETPLACE
+  SUBSCRIPTION
+  SETTLEMENT
+  GENERAL_SALE
+  ALL_PURPOSES
+}
+
+enum FeeBearer {
+  CUSTOMER
+  MERCHANT
+  PLATFORM
+  SHARED
+}
+
+enum RefundStatus {
+  PENDING_MANUAL_REVIEW
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum PayoutStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+  REJECTED
+  MANUAL_REQUIRED
+}
+
+enum PayoutMethod {
+  BANK_TRANSFER
+  MOBILE_WALLET
+  MANUAL
+  OTHER
+}
+
+model AdminUser {
+  id                        String               @id @default(cuid())
+  email                     String               @unique
+  passwordHash              String               @map("password_hash")
+  role                      AdminRole
+  isActive                  Boolean              @default(true) @map("is_active")
+  refreshTokenHash          String?              @map("refresh_token_hash")
+  createdAt                 DateTime             @default(now()) @map("created_at")
+  updatedAt                 DateTime             @updatedAt @map("updated_at")
+  createdCredentials        ProviderCredential[] @relation("CredentialCreatedBy")
+  createdCredentialProfiles CredentialProfile[]  @relation("CredentialProfileCreatedBy")
+  createdMerchantKeys       MerchantApiKey[]     @relation("MerchantApiKeyCreatedBy")
+  currencyRates             CurrencyRate[]       @relation("CurrencyRateCreatedBy")
+  requestedRefunds          Refund[]             @relation("RefundRequestedBy")
+  requestedPayouts          PayoutRequest[]      @relation("PayoutRequestedBy")
+  reviewedPayouts           PayoutRequest[]      @relation("PayoutReviewedBy")
+  payoutEvents              PayoutEvent[]
+
+  @@map("admin_users")
+}
+
+model Merchant {
+  id                  String                    @id @default(cuid())
+  name                String
+  businessName        String                    @map("business_name")
+  contactEmail        String                    @unique @map("contact_email")
+  contactPhone        String?                   @map("contact_phone")
+  callbackUrl         String?                   @map("callback_url")
+  status              MerchantStatus            @default(ACTIVE)
+  environment         MerchantEnvironment       @default(SANDBOX)
+  notes               String?
+  createdAt           DateTime                  @default(now()) @map("created_at")
+  updatedAt           DateTime                  @updatedAt @map("updated_at")
+  domains             MerchantDomain[]
+  apiKeys             MerchantApiKey[]
+  sessions            PaymentSession[]
+  providerCredentials ProviderCredential[]
+  credentialProfiles  CredentialProfile[]
+  providerSettings    MerchantProviderSetting[]
+  refunds             Refund[]
+  payoutRequests      PayoutRequest[]
+
+  @@map("merchants")
+}
+
+model MerchantDomain {
+  id               String               @id @default(cuid())
+  merchantId       String               @map("merchant_id")
+  origin           String
+  normalizedOrigin String               @map("normalized_origin")
+  callbackUrl      String?              @map("callback_url")
+  webhookUrl       String?              @map("webhook_url")
+  status           MerchantDomainStatus @default(ACTIVE)
+  environment      MerchantEnvironment  @default(SANDBOX)
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+  merchant         Merchant             @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, environment, normalizedOrigin])
+  @@index([merchantId, environment, status])
+  @@map("merchant_domains")
+}
+
+model MerchantApiKey {
+  id               String               @id @default(cuid())
+  merchantId       String               @map("merchant_id")
+  label            String
+  clientId         String               @unique @map("client_id")
+  secretHash       String               @map("secret_hash")
+  secretPreview    String               @map("secret_preview")
+  secretIv         String               @map("secret_iv")
+  secretAuthTag    String               @map("secret_auth_tag")
+  secretCiphertext String               @map("secret_ciphertext")
+  status           MerchantApiKeyStatus @default(ACTIVE)
+  environment      MerchantEnvironment  @default(SANDBOX)
+  lastUsedAt       DateTime?            @map("last_used_at")
+  expiresAt        DateTime?            @map("expires_at")
+  createdById      String?              @map("created_by_id")
+  rotatedAt        DateTime?            @map("rotated_at")
+  revokedAt        DateTime?            @map("revoked_at")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+  merchant         Merchant             @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  createdBy        AdminUser?           @relation("MerchantApiKeyCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  paymentSessions  PaymentSession[]
+
+  @@index([merchantId, environment, status])
+  @@map("merchant_api_keys")
+}
+
+model PaymentProvider {
+  id                      String                    @id @default(cuid())
+  name                    ProviderName
+  providerCode            String?                   @map("provider_code")
+  displayName             String                    @map("display_name")
+  checkoutDisplayName     String?                   @map("checkout_display_name")
+  checkoutDescription     String?                   @map("checkout_description")
+  isActive                Boolean                   @default(true) @map("is_active")
+  isDevelopmentOnly       Boolean                   @default(false) @map("is_development_only")
+  environment             MerchantEnvironment       @default(SANDBOX) @map("environment")
+  adapterType             String?                   @map("adapter_type")
+  coverageType            CoverageType              @default(LOCAL) @map("coverage_type")
+  regionCode              String?                   @map("region_code")
+  logoUrl                 String?                   @map("logo_url")
+  iconUrl                 String?                   @map("icon_url")
+  brandColor              String?                   @map("brand_color")
+  supportedCurrencies     Json?                     @map("supported_currencies")
+  supportedCountries      Json?                     @map("supported_countries")
+  supportedRegions        Json?                     @map("supported_regions")
+  excludedCountries       Json?                     @map("excluded_countries")
+  allowCurrencyConversion Boolean                   @default(false) @map("allow_currency_conversion")
+  priority                Int                       @default(100)
+  createdAt               DateTime                  @default(now()) @map("created_at")
+  updatedAt               DateTime                  @updatedAt @map("updated_at")
+  credentials             ProviderCredential[]
+  credentialProfiles      CredentialProfile[]
+  routingRules            GatewayRoutingRule[]
+  feeRules                GatewayFeeRule[]
+  sessions                PaymentSession[]
+  transactions            Transaction[]
+  webhookLogs             WebhookLog[]
+  merchantSettings        MerchantProviderSetting[]
+  refunds                 Refund[]
+  payoutRequests          PayoutRequest[]
+
+  @@unique([name, environment])
+  @@unique([providerCode, environment])
+  @@index([isActive, environment, coverageType])
+  @@map("payment_providers")
+}
+
+model MerchantProviderSetting {
+  id         String          @id @default(cuid())
+  merchantId String          @map("merchant_id")
+  providerId String          @map("provider_id")
+  isEnabled  Boolean         @default(true) @map("is_enabled")
+  priority   Int             @default(100)
+  countries  Json?           @map("countries")
+  currencies Json?           @map("currencies")
+  createdAt  DateTime        @default(now()) @map("created_at")
+  updatedAt  DateTime        @updatedAt @map("updated_at")
+  merchant   Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  provider   PaymentProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, providerId])
+  @@index([merchantId, isEnabled, priority])
+  @@map("merchant_provider_settings")
+}
+
+model ProviderCredential {
+  id          String          @id @default(cuid())
+  providerId  String          @map("provider_id")
+  merchantId  String?         @map("merchant_id")
+  scope       CredentialScope
+  keyLabel    String          @map("key_label")
+  iv          String
+  authTag     String          @map("auth_tag")
+  ciphertext  String
+  isActive    Boolean         @default(true) @map("is_active")
+  createdById String?         @map("created_by_id")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+  provider    PaymentProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  merchant    Merchant?       @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+  createdBy   AdminUser?      @relation("CredentialCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([providerId, merchantId, isActive])
+  @@map("provider_credentials")
+}
+
+model CredentialProfile {
+  id                  String              @id @default(cuid())
+  providerId          String              @map("provider_id")
+  merchantId          String?             @map("merchant_id")
+  scope               CredentialScope     @default(PLATFORM)
+  environment         MerchantEnvironment @default(SANDBOX)
+  label               String
+  supportedPurposes   PaymentPurpose[]    @map("supported_purposes")
+  countryCodes        String[]            @map("country_codes")
+  currencyCodes       String[]            @map("currency_codes")
+  settlementProfileId String?             @map("settlement_profile_id")
+  priority            Int                 @default(100)
+  isActive            Boolean             @default(true) @map("is_active")
+  encryptedSecrets    Json                @map("encrypted_secrets")
+  createdById         String?             @map("created_by_id")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  lastTestedAt         DateTime?               @map("last_tested_at")
+  lastTestStatus        CredentialTestStatus?  @map("last_test_status")
+  lastTestEnvironment   MerchantEnvironment?   @map("last_test_environment")
+  lastTestMessage       String?                @map("last_test_message")
+  lastTestDetails       Json?                  @map("last_test_details")
+  sandboxVerifiedAt     DateTime?              @map("sandbox_verified_at")
+  liveVerifiedAt        DateTime?              @map("live_verified_at")
+  verificationExpiresAt DateTime?              @map("verification_expires_at")
+
+  provider          PaymentProvider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  merchant          Merchant?            @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+  settlementProfile SettlementProfile?   @relation(fields: [settlementProfileId], references: [id], onDelete: SetNull)
+  createdBy         AdminUser?           @relation("CredentialProfileCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  routingRules      GatewayRoutingRule[]
+  feeRules          GatewayFeeRule[]
+  paymentSessions   PaymentSession[]
+
+  @@unique([providerId, environment, scope, merchantId, label])
+  @@index([providerId, environment, isActive])
+  @@map("credential_profiles")
+}
+
+model GatewayRoutingRule {
+  id                  String              @id @default(cuid())
+  providerId          String              @map("provider_id")
+  credentialProfileId String?             @map("credential_profile_id")
+  countryCode         String              @map("country_code")
+  currencyCode        String              @map("currency_code")
+  purpose             PaymentPurpose
+  environment         MerchantEnvironment @default(SANDBOX)
+  scopeType           CredentialScope     @default(PLATFORM) @map("scope_type")
+  scopeId             String?             @map("scope_id")
+  priority            Int                 @default(100)
+  showAtCheckout      Boolean             @default(true) @map("show_at_checkout")
+  fallbackAllowed     Boolean             @default(true) @map("fallback_allowed")
+  isActive            Boolean             @default(true) @map("is_active")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  provider          PaymentProvider    @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  credentialProfile CredentialProfile? @relation(fields: [credentialProfileId], references: [id], onDelete: SetNull)
+
+  @@unique([countryCode, currencyCode, purpose, providerId, environment, scopeType, scopeId])
+  @@index([providerId, environment, isActive])
+  @@map("gateway_routing_rules")
+}
+
+model GatewayFeeRule {
+  id                  String              @id @default(cuid())
+  providerId          String              @map("provider_id")
+  credentialProfileId String?             @map("credential_profile_id")
+  countryCode         String?             @map("country_code")
+  currencyCode        String?             @map("currency_code")
+  purpose             PaymentPurpose
+  environment         MerchantEnvironment @default(SANDBOX)
+  percentageFee       Decimal             @map("percentage_fee") @db.Decimal(5, 2)
+  fixedFee            Decimal             @map("fixed_fee") @db.Decimal(20, 8)
+  minFee              Decimal?            @map("min_fee") @db.Decimal(20, 8)
+  maxFee              Decimal?            @map("max_fee") @db.Decimal(20, 8)
+  feeBearer           FeeBearer           @default(MERCHANT) @map("fee_bearer")
+  isActive            Boolean             @default(true) @map("is_active")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  provider          PaymentProvider    @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  credentialProfile CredentialProfile? @relation(fields: [credentialProfileId], references: [id], onDelete: SetNull)
+
+  @@map("gateway_fee_rules")
+}
+
+model SettlementProfile {
+  id             String          @id @default(cuid())
+  name           String
+  scopeType      CredentialScope @default(PLATFORM) @map("scope_type")
+  scopeId        String?         @map("scope_id")
+  countryCode    String          @map("country_code")
+  currencyCode   String          @map("currency_code")
+  purpose        PaymentPurpose?
+  payoutSchedule String?         @map("payout_schedule")
+  metadata       Json            @map("metadata")
+  isActive       Boolean         @default(true) @map("is_active")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  credentialProfiles CredentialProfile[]
+  paymentSessions    PaymentSession[]
+  payoutRequests     PayoutRequest[]
+
+  @@map("settlement_profiles")
+}
+
+model PaymentSession {
+  id                    String              @id @default(cuid())
+  reference             String              @unique
+  merchantId            String              @map("merchant_id")
+  merchantApiKeyId      String?             @map("merchant_api_key_id")
+  providerId            String              @map("provider_id")
+  orderId               String              @map("order_id")
+  environment           MerchantEnvironment @default(SANDBOX)
+  amount                BigInt
+  currency              String
+  purpose               String
+  description           String?
+  customer              Json
+  successUrl            String              @map("success_url")
+  cancelUrl             String?             @map("cancel_url")
+  callbackUrl           String              @map("callback_url")
+  webhookUrl            String?             @map("webhook_url")
+  returnUrl             String              @map("return_url")
+  status                SessionStatus       @default(PENDING)
+  providerSessionId     String?             @map("provider_session_id")
+  providerReference     String?             @map("provider_reference")
+  metadata              Json?
+  requestHash           String?             @map("request_hash")
+  requestIp             String?             @map("request_ip")
+  requestUserAgent      String?             @map("request_user_agent")
+  chargedAmount         BigInt?             @map("charged_amount")
+  chargedCurrency       String?             @map("charged_currency")
+  exchangeRate          Decimal?            @map("exchange_rate") @db.Decimal(20, 8)
+  exchangeRateSource    String?             @map("exchange_rate_source")
+  exchangeRateTimestamp DateTime?           @map("exchange_rate_timestamp")
+  expiresAt             DateTime?           @map("expires_at")
+  baseAmount            BigInt?             @map("base_amount")
+  gatewayFee            BigInt?             @map("gateway_fee")
+  platformFee           BigInt?             @map("platform_fee")
+  totalPayableAmount    BigInt?             @map("total_payable_amount")
+  feeBearer             FeeBearer?          @map("fee_bearer")
+  netSettlementAmount   BigInt?             @map("net_settlement_amount")
+  credentialProfileId   String?             @map("credential_profile_id")
+  routingFallbackLevel  String?             @map("routing_fallback_level")
+  settlementProfileId   String?             @map("settlement_profile_id")
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @updatedAt @map("updated_at")
+  merchant              Merchant            @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  merchantApiKey        MerchantApiKey?     @relation(fields: [merchantApiKeyId], references: [id], onDelete: SetNull)
+  provider              PaymentProvider     @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  credentialProfile     CredentialProfile?  @relation(fields: [credentialProfileId], references: [id], onDelete: SetNull)
+  settlementProfile     SettlementProfile?  @relation(fields: [settlementProfileId], references: [id], onDelete: SetNull)
+  transactions          Transaction[]
+  webhookLogs           WebhookLog[]
+  callbackLogs          CallbackLog[]
+  refunds               Refund[]
+
+  @@unique([merchantId, environment, orderId])
+  @@index([merchantId, environment, status, createdAt])
+  @@map("payment_sessions")
+}
+
+model Transaction {
+  id                String            @id @default(cuid())
+  sessionId         String            @map("session_id")
+  providerId        String            @map("provider_id")
+  amount            BigInt
+  currency          String
+  status            TransactionStatus @default(PENDING)
+  providerReference String?           @map("provider_reference")
+  rawResponse       Json?             @map("raw_response")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+  session           PaymentSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  provider          PaymentProvider   @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  refunds           Refund[]
+
+  @@index([sessionId, status])
+  @@map("transactions")
+}
+
+model Refund {
+  id                String       @id @default(cuid())
+  transactionId     String       @map("transaction_id")
+  sessionId         String       @map("session_id")
+  merchantId        String       @map("merchant_id")
+  providerId        String       @map("provider_id")
+  amount            BigInt
+  currency          String
+  reason            String?
+  status            RefundStatus @default(PENDING_MANUAL_REVIEW)
+  providerRefundRef String?      @map("provider_refund_ref")
+  rawResponse       Json?        @map("raw_response")
+  requestedById     String?      @map("requested_by_id")
+  providerSupported Boolean      @default(false) @map("provider_supported")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  transaction Transaction     @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  session     PaymentSession  @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  merchant    Merchant        @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  provider    PaymentProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  requestedBy AdminUser?      @relation("RefundRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@index([transactionId])
+  @@index([sessionId, status])
+  @@index([merchantId, status, createdAt])
+  @@map("refunds")
+}
+
+model PayoutRequest {
+  id                  String            @id @default(cuid())
+  merchantId          String            @map("merchant_id")
+  settlementProfileId String            @map("settlement_profile_id")
+  providerId          String?           @map("provider_id")
+  amount              BigInt
+  currency            String
+  countryCode         String            @map("country_code")
+  method              PayoutMethod
+  status              PayoutStatus      @default(PENDING_REVIEW)
+  requestedById       String?           @map("requested_by_id")
+  reviewedById        String?           @map("reviewed_by_id")
+  approvedAt          DateTime?         @map("approved_at")
+  processedAt         DateTime?         @map("processed_at")
+  providerPayoutRef   String?           @map("provider_payout_ref")
+  failureReason       String?           @map("failure_reason")
+  internalNote        String?           @map("internal_note")
+  metadata            Json?
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+
+  merchant          Merchant          @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  settlementProfile SettlementProfile @relation(fields: [settlementProfileId], references: [id], onDelete: Restrict)
+  provider          PaymentProvider?  @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  requestedBy       AdminUser?        @relation("PayoutRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  reviewedBy        AdminUser?        @relation("PayoutReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  events            PayoutEvent[]
+
+  @@index([merchantId, currency, status, createdAt])
+  @@index([settlementProfileId, status, createdAt])
+  @@index([providerId, status, createdAt])
+  @@map("payout_requests")
+}
+
+model PayoutEvent {
+  id              String        @id @default(cuid())
+  payoutRequestId String        @map("payout_request_id")
+  action          String
+  fromStatus      PayoutStatus? @map("from_status")
+  toStatus        PayoutStatus  @map("to_status")
+  note            String?       @map("note")
+  metadata        Json?
+  createdById     String?       @map("created_by_id")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  payoutRequest PayoutRequest @relation(fields: [payoutRequestId], references: [id], onDelete: Cascade)
+  createdBy     AdminUser?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([payoutRequestId, createdAt])
+  @@map("payout_events")
+}
+
+model WebhookLog {
+  id              String           @id @default(cuid())
+  sessionId       String?          @map("session_id")
+  providerId      String?          @map("provider_id")
+  providerEventId String?          @map("provider_event_id")
+  requestHeaders  Json?            @map("request_headers")
+  rawPayload      Json?            @map("raw_payload")
+  status          DeliveryStatus   @default(PENDING)
+  processedAt     DateTime?        @map("processed_at")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  session         PaymentSession?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  provider        PaymentProvider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
+
+  @@index([providerEventId])
+  @@index([providerId, providerEventId])
+  @@map("webhook_logs")
+}
+
+model CallbackLog {
+  id            String         @id @default(cuid())
+  sessionId     String         @map("session_id")
+  callbackUrl   String         @map("callback_url")
+  requestBody   Json           @map("request_body")
+  responseBody  Json?          @map("response_body")
+  responseCode  Int?           @map("response_code")
+  status        DeliveryStatus @default(PENDING)
+  attempts      Int            @default(0)
+  lastAttemptAt DateTime?      @map("last_attempt_at")
+  nextAttemptAt DateTime?      @map("next_attempt_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  session       PaymentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status])
+  @@map("callback_logs")
+}
+
+model AuditLog {
+  id         String         @id @default(cuid())
+  actorType  AuditActorType @map("actor_type")
+  actorId    String?        @map("actor_id")
+  action     String
+  entityType String         @map("entity_type")
+  entityId   String         @map("entity_id")
+  ipAddress  String?        @map("ip_address")
+  metadata   Json?
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  @@index([entityType, entityId, createdAt])
+  @@map("audit_logs")
+}
+
+model AdminSession {
+  id        String   @id @default(cuid())
+  adminId   String   @map("admin_id")
+  token     String   @unique
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("admin_sessions")
+}
+
+model AdminInvitation {
+  id          String    @id @default(cuid())
+  email       String    @unique
+  role        AdminRole
+  token       String    @unique
+  invitedById String    @map("invited_by_id")
+  expiresAt   DateTime  @map("expires_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("admin_invitations")
+}
+
+model CountryGatewayRule {
+  id                                 String                     @id @default(cuid())
+  countryCode                        String                     @unique @map("country_code")
+  countryName                        String                     @map("country_name")
+  regionCode                         String?                    @map("region_code")
+  regionName                         String?                    @map("region_name")
+  defaultCurrency                    String                     @map("default_currency")
+  localGatewaysEnabled               Boolean                    @default(true) @map("local_gateways_enabled")
+  internationalGatewaysEnabled       Boolean                    @default(true) @map("international_gateways_enabled")
+  internationalDisplayPolicy         InternationalDisplayPolicy @map("international_display_policy")
+  fallbackToInternationalWhenNoLocal Boolean                    @default(true) @map("fallback_to_international_when_no_local")
+  isActive                           Boolean                    @default(true) @map("is_active")
+  notes                              String?
+  source                             String                     @default("ADMIN") @map("source")
+  isSystemSeeded                     Boolean                    @default(false) @map("is_system_seeded")
+  createdAt                          DateTime                   @default(now()) @map("created_at")
+  updatedAt                          DateTime                   @updatedAt @map("updated_at")
+
+  @@index([isActive, regionCode])
+  @@index([source, isSystemSeeded])
+  @@map("country_gateway_rules")
+}
+
+model CurrencyRate {
+  id               String     @id @default(cuid())
+  baseCurrency     String     @map("base_currency")
+  quoteCurrency    String     @map("quote_currency")
+  rate             Decimal    @db.Decimal(20, 8)
+  source           RateSource
+  providerName     String?    @map("provider_name")
+  effectiveFrom    DateTime   @map("effective_from")
+  effectiveTo      DateTime?  @map("effective_to")
+  isActive         Boolean    @default(true) @map("is_active")
+  createdByAdminId String?    @map("created_by_admin_id")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+  createdBy        AdminUser? @relation("CurrencyRateCreatedBy", fields: [createdByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([baseCurrency, quoteCurrency, isActive, effectiveFrom])
+  @@map("currency_rates")
+}
+
+model CurrencySetting {
+  id                    String         @id @default(cuid())
+  defaultBaseCurrency   String         @default("USD") @map("default_base_currency")
+  rateUpdateMode        RateUpdateMode @default(MANUAL) @map("rate_update_mode")
+  rateMarkupPercent     Decimal        @default(0) @map("rate_markup_percent") @db.Decimal(5, 2)
+  roundingMode          RoundingMode   @default(ROUND_2_DECIMALS) @map("rounding_mode")
+  staleRateLimitMinutes Int            @default(60) @map("stale_rate_limit_minutes")
+  isActive              Boolean        @default(true) @map("is_active")
+  createdAt             DateTime       @default(now()) @map("created_at")
+  updatedAt             DateTime       @updatedAt @map("updated_at")
+
+  @@map("currency_settings")
+}

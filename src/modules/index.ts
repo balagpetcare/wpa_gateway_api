@@ -1,0 +1,47 @@
+import type { FastifyInstance } from 'fastify';
+import { adminRoutes } from './admins/routes.js';
+import { auditLogRoutes } from './audit-logs/routes.js';
+import { authRoutes } from './auth/routes.js';
+import { callbackLogRoutes } from './callback-logs/routes.js';
+import { countryGatewayRuleRoutes } from './country-gateway-rules/routes.js';
+import { currencyRoutes } from './currency/routes.js';
+import { dashboardRoutes } from './dashboard/routes.js';
+import { merchantApiKeyRoutes } from './merchant-api-keys/routes.js';
+import { merchantDomainRoutes } from './merchant-domains/routes.js';
+import { merchantRoutes } from './merchants/routes.js';
+import { paymentProviderRoutes } from './payment-providers/routes.js';
+import { payoutRoutes } from './payouts/routes.js';
+import { paymentSessionRoutes } from './payment-sessions/routes.js';
+import { providerCredentialRoutes } from './provider-credentials/routes.js';
+import { settlementRoutes } from './settlements/routes.js';
+import { transactionRoutes } from './transactions/routes.js';
+import { webhookLogRoutes } from './webhook-logs/routes.js';
+import { webhookRoutes } from './webhooks/routes.js';
+
+import { gatewayRoutingRuleRoutes } from './gateway-routing-rules/routes.js';
+import { gatewayFeeRuleRoutes } from './gateway-fee-rules/routes.js';
+import { refundRoutes } from './refunds/routes.js';
+
+export const registerModules = async (app: FastifyInstance) => {
+  await app.register(authRoutes);
+  await app.register(adminRoutes);
+  await app.register(merchantRoutes);
+  await app.register(merchantDomainRoutes);
+  await app.register(merchantApiKeyRoutes);
+  await app.register(paymentProviderRoutes);
+  await app.register(payoutRoutes);
+  await app.register(dashboardRoutes);
+  await app.register(providerCredentialRoutes);
+  await app.register(countryGatewayRuleRoutes);
+  await app.register(gatewayRoutingRuleRoutes);
+  await app.register(gatewayFeeRuleRoutes);
+  await app.register(currencyRoutes);
+  await app.register(paymentSessionRoutes);
+  await app.register(settlementRoutes);
+  await app.register(webhookRoutes);
+  await app.register(transactionRoutes);
+  await app.register(refundRoutes);
+  await app.register(webhookLogRoutes);
+  await app.register(callbackLogRoutes);
+  await app.register(auditLogRoutes);
+};
