@@ -18,6 +18,7 @@ import { buildGatewayUrl, resolveGatewayBaseUrl } from '../../utils/public-url.j
 import { validateBody, validateParams } from '../../utils/validation.js';
 import { getProviderAdapter } from '../../providers/index.js';
 import { assertProviderReadyForPayments } from '../../providers/readiness.js';
+import { buildVaccinationSessionMetadata } from './vaccination-metadata.js';
 import {
   paymentSessionCreateSchema,
   paymentSessionCustomerShape,
@@ -805,6 +806,11 @@ export const paymentSessionRoutes: FastifyPluginAsync = async (app) => {
 
         const created = await prisma.$transaction(async (tx) => {
           const reference = generateReference();
+          const enrichedMetadata = buildVaccinationSessionMetadata({
+            merchantOrderId,
+            description: payload.description,
+            metadata: (payload.metadata ?? undefined) as Record<string, unknown> | undefined
+          });
           const session = await tx.paymentSession.create({
             data: {
               reference,
@@ -827,7 +833,7 @@ export const paymentSessionRoutes: FastifyPluginAsync = async (app) => {
               callbackUrl: payload.callbackUrl,
               webhookUrl: payload.webhookUrl,
               returnUrl: payload.successUrl,
-              metadata: payload.metadata as Prisma.InputJsonValue | undefined,
+              metadata: enrichedMetadata as Prisma.InputJsonValue,
               requestHash,
               requestIp: request.ip,
               requestUserAgent: userAgent ?? null,

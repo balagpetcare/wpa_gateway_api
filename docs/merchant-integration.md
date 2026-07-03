@@ -133,6 +133,31 @@ Content-Type: application/json
 
 > **Amount precision:** All amounts are integers in the smallest currency unit. `4999` = $49.99 USD.
 
+### Vaccination booking metadata contract
+
+For BPA vaccination campaigns, include these metadata fields in the payment
+session request so the downstream Central Auth communication event can send the
+post-payment SMS/email:
+
+- `bookingRef`
+- `campaignName`
+- `bookingSlipUrl`
+- `petCount`
+- `venueName`
+- `sessionDate`
+- `sessionTime`
+- `supportPhone`
+
+Recommended production setup:
+
+```env
+PUBLIC_SITE_URL=https://bangladeshpetassociation.com
+```
+
+The booking slip URL should be a public BPA site URL, for example:
+
+`https://bangladeshpetassociation.com/booking/BPA-VAC-2026-000123`
+
 ### Success Response (HTTP 201)
 
 ```json

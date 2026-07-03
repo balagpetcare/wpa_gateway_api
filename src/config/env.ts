@@ -17,6 +17,7 @@ const envSchema = z.object({
   HMAC_TIMESTAMP_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
   // Comma-separated list of origins allowed to reach /admin/* endpoints
   ADMIN_ORIGINS: z.string().default('http://localhost:3000'),
+  PUBLIC_SITE_URL: z.string().url().optional(),
   // How long to keep used HMAC signatures in the replay-protection store (seconds)
   NONCE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
   ALLOW_MOCK_PROVIDERS: z.union([z.literal('true'), z.literal('false')]).default('false'),
@@ -30,7 +31,11 @@ const envSchema = z.object({
   JOB_CALLBACK_RETRY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   JOB_PAYOUT_STALE_REVIEW_ENABLED: z.union([z.literal('true'), z.literal('false')]).default('true'),
   JOB_PAYOUT_STALE_REVIEW_INTERVAL_SECONDS: z.coerce.number().int().positive().default(900),
-  JOB_PAYOUT_STALE_HOURS: z.coerce.number().int().positive().default(24)
+  JOB_PAYOUT_STALE_HOURS: z.coerce.number().int().positive().default(24),
+  CENTRAL_AUTH_BASE_URL: z.string().url().optional(),
+  CENTRAL_COMMUNICATION_API_URL: z.string().url().optional(),
+  CENTRAL_CLIENT_ID: z.string().min(1).optional(),
+  CENTRAL_SERVICE_API_KEY: z.string().min(1).optional()
 });
 
 export const env = envSchema.parse(process.env);

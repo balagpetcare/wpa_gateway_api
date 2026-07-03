@@ -3,6 +3,7 @@ import { prisma } from '../config/prisma.js';
 import { getProviderAdapter } from '../providers/index.js';
 import { assertProviderReadyForPayments } from '../providers/readiness.js';
 import { createAuditLog } from './audit.js';
+import { sendCentralCommunicationEvent } from './central-communication.js';
 import { deliverMerchantCallback } from './callback-delivery.js';
 import { getDecryptedCredentialsForSession, getDecryptedProviderCredentials } from './provider-credentials.js';
 import { selectActiveProvider } from './provider-selection.js';
@@ -460,6 +461,45 @@ export const processProviderWebhook = async (input: {
           requestIp: input.requestIp
         })
       : { callbackLogId: null, status: 'SKIPPED' as const, attempts: 0 };
+
+  if (mappedSessionStatus === 'SUCCESS' && latestTransaction) {
+    const metadata = session.metadata && typeof session.metadata === 'object' && !Array.isArray(session.metadata) ? (session.metadata as Record<string, unknown>) : null;
+    const centralCommunicationResult = await sendCentralCommunicationEvent({
+      customer: session.customer,
+      metadata: session.metadata ?? null,
+      amountMinor: session.amount,
+      currency: session.currency,
+      paymentRef: latestTransaction.providerReference ?? session.providerReference ?? session.reference,
+      bookingRef: typeof metadata?.bookingRef === 'string' ? metadata.bookingRef : session.orderId,
+      requestId: webhookLog.id,
+      sourceIp: input.requestIp ?? null,
+      sessionId: session.id,
+      transactionId: latestTransaction.id
+    });
+
+    if (centralCommunicationResult.sent) {
+      console.info(
+        {
+          sessionId: session.id,
+          bookingRef: session.orderId,
+          paymentRef: latestTransaction.providerReference ?? session.providerReference ?? session.reference,
+          centralEventId: centralCommunicationResult.eventId,
+          deduped: centralCommunicationResult.deduped
+        },
+        'Central communication event sent'
+      );
+    } else {
+      console.warn(
+        {
+          sessionId: session.id,
+          bookingRef: session.orderId,
+          paymentRef: latestTransaction.providerReference ?? session.providerReference ?? session.reference,
+          reason: centralCommunicationResult.reason
+        },
+        'Central communication event skipped or failed'
+      );
+    }
+  }
 
   await createAuditLog({
     actorType: 'SYSTEM',

@@ -10,7 +10,9 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "prisma:generate": "prisma generate",
     "seed": "tsx prisma/seed.ts",
-    "sandbox:e2e": "tsx scripts/provider-sandbox-e2e.ts"
+    "sandbox:e2e": "tsx scripts/provider-sandbox-e2e.ts",
+    "verify:central-communication": "tsx scripts/verify-central-communication-event.ts",
+    "verify:vaccination-metadata": "tsx scripts/verify-vaccination-metadata.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
