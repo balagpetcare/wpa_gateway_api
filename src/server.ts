@@ -36,7 +36,7 @@ process.once('SIGTERM', () => void shutdown('SIGTERM'));
 const start = async () => {
   try {
     await app.listen({
-      host: '0.0.0.0',
+      host: process.env.HOST || '127.0.0.1',
       port: env.PORT
     });
   } catch (error) {
