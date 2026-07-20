@@ -176,6 +176,10 @@ model AdminUser {
   id                        String               @id @default(cuid())
   email                     String               @unique
   passwordHash              String               @map("password_hash")
+  /// WPA Central Auth user id, set only for accounts provisioned via the
+  /// Global Super Admin cross-service identity (Stage 1). Never set for
+  /// ordinary local gateway admin accounts.
+  centralUserId             String?              @unique @map("central_user_id")
   role                      AdminRole
   isActive                  Boolean              @default(true) @map("is_active")
   refreshTokenHash          String?              @map("refresh_token_hash")

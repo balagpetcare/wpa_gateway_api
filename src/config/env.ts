@@ -35,7 +35,14 @@ const envSchema = z.object({
   CENTRAL_AUTH_BASE_URL: z.string().url().optional(),
   CENTRAL_COMMUNICATION_API_URL: z.string().url().optional(),
   CENTRAL_CLIENT_ID: z.string().min(1).optional(),
-  CENTRAL_SERVICE_API_KEY: z.string().min(1).optional()
+  CENTRAL_SERVICE_API_KEY: z.string().min(1).optional(),
+  // Global Super Admin, Stage 1: shared secret with WPA Central Auth
+  // (wpa-auth-api), used only to verify admin-scoped Central Auth tokens in
+  // requireAdminAuth. Independent of JWT_SECRET (the gateway's own local
+  // admin session secret, unchanged). Optional so the gateway still boots
+  // with only local admin auth if this is not yet configured.
+  CENTRAL_AUTH_JWT_SECRET: z.string().min(1).optional(),
+  CENTRAL_AUTH_ISSUER: z.string().min(1).optional()
 });
 
 export const env = envSchema.parse(process.env);
