@@ -1,85 +1,78 @@
-export const adminPermissions = {
+import type { AdminRole } from '@prisma/client';
+
+export const adminPermissions: Record<AdminRole, readonly string[]> = {
   SUPER_ADMIN: ['*'],
   ADMIN: [
     'dashboard.read',
-    'admin_users.read',
-    'admin_users.create',
-    'admin_users.update',
-    'admin_users.delete',
-    'admin_users.invite',
-    'roles.read',
-    'roles.update',
-    'payments.read',
-    'payments.update',
-    'merchants.read',
-    'merchants.update',
     'transactions.read',
-    'settings.read',
-    'settings.update',
-    'audit_logs.read'
-  ],
-  MANAGER: [
-    'dashboard.read',
-    'payments.read',
-    'payments.update',
-    'merchants.read',
-    'merchants.update',
-    'transactions.read',
-    'settings.read',
-    'settings.update',
-    'audit_logs.read'
-  ],
-  SUPPORT: [
-    'dashboard.read',
+    'refunds.manage',
+    'settlements.read',
+    'settlements.manage',
+    'providers.read',
+    'providers.manage',
+    'api_credentials.read',
+    'api_credentials.manage',
     'admin_users.read',
-    'merchants.read',
-    'payments.read',
-    'transactions.read'
+    'audit_logs.read',
   ],
-  AUDITOR: [
+  FINANCE_ADMIN: [
     'dashboard.read',
-    'admin_users.read',
-    'roles.read',
-    'payments.read',
-    'merchants.read',
     'transactions.read',
-    'settings.read',
-    'audit_logs.read'
+    'refunds.manage',
+    'settlements.read',
+    'settlements.manage',
+    'audit_logs.read',
   ],
-  DEVELOPER: [
+  OPERATIONS_ADMIN: [
     'dashboard.read',
-    'admin_users.read',
-    'roles.read',
-    'payments.read',
-    'merchants.read',
     'transactions.read',
-    'settings.read',
-    'settings.update',
-    'audit_logs.read'
-  ]
-} as const;
+    'providers.read',
+    'providers.manage',
+    'api_credentials.read',
+    'api_credentials.manage',
+    'settlements.read',
+  ],
+  VIEWER: [
+    'dashboard.read',
+    'transactions.read',
+    'settlements.read',
+    'providers.read',
+    'api_credentials.read',
+    'audit_logs.read',
+  ],
+};
 
 export type AdminRoleName = keyof typeof adminPermissions;
 
-const oldToNewPermissionMap: Record<string, string> = {
+const legacyPermissionMap: Record<string, string> = {
   'audit:read': 'audit_logs.read',
-  'callbacks:read': 'payments.read',
-  'webhooks:read': 'payments.read',
-  'sessions:read': 'payments.read',
+  'callbacks:read': 'transactions.read',
+  'webhooks:read': 'transactions.read',
+  'sessions:read': 'transactions.read',
   'transactions:read': 'transactions.read',
-  'merchants:read': 'merchants.read',
-  'merchants:write': 'merchants.update',
-  'providers:read': 'settings.read',
-  'providers:write': 'settings.update',
-  'settlement-profiles:read': 'payments.read',
-  'settlement-profiles:write': 'payments.update',
-  'settlements:read': 'payments.read',
-  'payouts:read': 'payments.read',
-  'payouts:write': 'payments.update',
-  'payouts:approve': 'payments.update',
-  'payouts:mark-success': 'payments.update',
-  'refunds:read': 'payments.read',
-  'refunds:write': 'payments.update'
+  'merchants:read': 'transactions.read',
+  'merchants:write': 'providers.manage',
+  'providers:read': 'providers.read',
+  'providers:write': 'providers.manage',
+  'settlement-profiles:read': 'settlements.read',
+  'settlement-profiles:write': 'settlements.manage',
+  'settlements:read': 'settlements.read',
+  'payouts:read': 'settlements.read',
+  'payouts:write': 'settlements.manage',
+  'payouts:approve': 'settlements.manage',
+  'payouts:mark-success': 'settlements.manage',
+  'refunds:read': 'transactions.read',
+  'refunds:write': 'refunds.manage',
+  'payments.read': 'transactions.read',
+  'payments.update': 'refunds.manage',
+  'settings.read': 'providers.read',
+  'settings.update': 'providers.manage',
+  'admin_users.create': 'admin_users.manage',
+  'admin_users.update': 'admin_users.manage',
+  'admin_users.delete': 'admin_users.manage',
+  'admin_users.invite': 'admin_users.manage',
+  'roles.read': 'admin_users.read',
+  'roles.update': 'admin_users.manage',
 };
 
 export const hasPermission = (role: string, permission: string) => {
@@ -87,13 +80,23 @@ export const hasPermission = (role: string, permission: string) => {
     return false;
   }
 
-  const permissions = adminPermissions[role as AdminRoleName] as readonly string[];
-  if (permissions.includes('*')) return true;
+  const permissions = adminPermissions[role as AdminRoleName];
+  if (permissions.includes('*')) {
+    return true;
+  }
 
-  if (permissions.includes(permission)) return true;
+  if (permissions.includes(permission)) {
+    return true;
+  }
 
-  const mapped = oldToNewPermissionMap[permission];
-  if (mapped && permissions.includes(mapped)) return true;
+  if (permission === 'admin_users.manage') {
+    return role === 'SUPER_ADMIN';
+  }
+
+  const mapped = legacyPermissionMap[permission];
+  if (mapped) {
+    return permissions.includes(mapped) || (mapped === 'admin_users.manage' && role === 'SUPER_ADMIN');
+  }
 
   return false;
 };

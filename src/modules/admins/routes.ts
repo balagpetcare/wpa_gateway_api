@@ -1,440 +1,368 @@
-import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
-import { requireAdminAuth } from '../../middleware/admin-auth.js';
-import { requirePermission } from '../../middleware/rbac.js';
-import { adminPermissions, hasPermission } from '../../utils/permissions.js';
-import { prisma } from '../../config/prisma.js';
-import { z } from 'zod';
-import { validateBody } from '../../utils/validation.js';
-import { ApiError } from '../../utils/errors.js';
 import bcrypt from 'bcrypt';
-import crypto from 'node:crypto';
-import { AdminRole } from '@prisma/client';
+import type { FastifyPluginAsync } from 'fastify';
+import { AdminRole, AdminUserStatus } from '@prisma/client';
+import { z } from 'zod';
+
+import { prisma } from '../../config/prisma.js';
+import { requireAdminAuth } from '../../middleware/admin-auth.js';
+import { ApiError } from '../../utils/errors.js';
+import { adminPermissions } from '../../utils/permissions.js';
+import { validateBody, validateQuery } from '../../utils/validation.js';
+import { createPasswordResetToken, issueTemporaryPassword, revokeAllAdminSessions } from '../auth/admin-auth-service.js';
 
 const createAdminSchema = z.object({
+  name: z.string().trim().min(2).max(120),
   email: z.string().email(),
-  password: z.string().min(8),
+  password: z.string().min(12),
   role: z.nativeEnum(AdminRole),
-  isActive: z.boolean().optional().default(true)
+  status: z.nativeEnum(AdminUserStatus).optional().default(AdminUserStatus.ACTIVE),
+  mustChangePassword: z.boolean().optional().default(false),
 });
 
 const updateAdminSchema = z.object({
-  email: z.string().email().optional(),
+  name: z.string().trim().min(2).max(120).optional(),
   role: z.nativeEnum(AdminRole).optional(),
-  isActive: z.boolean().optional()
 });
 
-const inviteAdminSchema = z.object({
-  email: z.string().email(),
-  role: z.nativeEnum(AdminRole)
+const updateStatusSchema = z.object({
+  status: z.nativeEnum(AdminUserStatus),
 });
 
-const toggleStatusSchema = z.object({
-  isActive: z.boolean()
+const adminListQuerySchema = z.object({
+  search: z.string().trim().optional(),
+  status: z.nativeEnum(AdminUserStatus).optional(),
+  role: z.nativeEnum(AdminRole).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(10),
 });
+
+const credentialIssueSchema = z.object({
+  adminUserId: z.string().min(1),
+});
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+async function countActiveSuperAdmins() {
+  return prisma.adminUser.count({
+    where: {
+      role: AdminRole.SUPER_ADMIN,
+      status: AdminUserStatus.ACTIVE,
+    },
+  });
+}
+
+function ensureSuperAdmin(actorRole: AdminRole) {
+  if (actorRole !== AdminRole.SUPER_ADMIN) {
+    throw new ApiError(403, 'FORBIDDEN', 'Only super admins can manage admin users.');
+  }
+}
+
+async function ensureTargetAdminExists(id: string) {
+  const target = await prisma.adminUser.findUnique({ where: { id } });
+  if (!target) {
+    throw new ApiError(404, 'NOT_FOUND', 'Admin user not found');
+  }
+  return target;
+}
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
-  // Legacy / existing endpoint
+  const requireSuperAdmin = async (request: any) => {
+    ensureSuperAdmin(request.adminUser!.role);
+  };
+
   app.get(
     '/admin/admins/roles',
     {
-      preHandler: [requireAdminAuth, requirePermission('roles.read')]
+      preHandler: [requireAdminAuth, requireSuperAdmin],
     },
     async () => ({
       data: Object.entries(adminPermissions).map(([role, permissions]) => ({
         role,
-        permissions
-      }))
-    })
+        permissions,
+      })),
+    }),
   );
 
-  // --- Handlers ---
+  const getAdminUsers = async (request: any) => {
+    ensureSuperAdmin(request.adminUser!.role);
 
-  // 1. GET admin-users
-  const getAdminUsers = async () => {
-    const admins = await prisma.adminUser.findMany({
-      orderBy: { createdAt: 'desc' }
-    });
+    const query = request.query as z.infer<typeof adminListQuerySchema>;
+    const page = query.page;
+    const limit = query.limit;
+    const search = query.search?.trim();
 
-    const sessions = await prisma.adminSession.findMany({
-      orderBy: { createdAt: 'desc' }
-    });
+    const where = {
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' as const } },
+              { email: { contains: search.toLowerCase(), mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.role ? { role: query.role } : {}),
+    };
 
-    const invitations = await prisma.adminInvitation.findMany({
-      orderBy: { createdAt: 'desc' }
-    });
-
-    const userList = admins.map(u => {
-      const lastSession = sessions.find(s => s.adminId === u.id);
-      const namePart = u.email.split('@')[0] || '';
-      const name = namePart.split(/[\._-]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
-      
-      return {
-        id: u.id,
-        name,
-        email: u.email,
-        role: u.role,
-        status: u.isActive ? 'Active' : 'Suspended',
-        date: lastSession ? lastSession.createdAt.toISOString().replace('T', ' ').slice(0, 16) : 'Never',
-        type: 'USER',
-        activeSessionsCount: sessions.filter(s => s.adminId === u.id && s.expiresAt > new Date()).length
-      };
-    });
-
-    const inviteList = invitations.map(i => {
-      const namePart = i.email.split('@')[0] || '';
-      const name = namePart.split(/[\._-]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
-
-      return {
-        id: i.id,
-        name,
-        email: i.email,
-        role: i.role,
-        status: 'Pending Invitation',
-        date: 'Never',
-        type: 'INVITATION',
-        activeSessionsCount: 0
-      };
-    });
+    const [total, admins] = await Promise.all([
+      prisma.adminUser.count({ where }),
+      prisma.adminUser.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          sessions: {
+            where: {
+              revokedAt: null,
+              expiresAt: { gt: new Date() },
+            },
+            orderBy: { updatedAt: 'desc' },
+            take: 5,
+          },
+          createdBy: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+      }),
+    ]);
 
     return {
-      data: [...userList, ...inviteList]
+      data: admins.map((admin) => ({
+        id: admin.id,
+        name: admin.name,
+        email: admin.email,
+        role: admin.role,
+        status: admin.status,
+        mustChangePassword: admin.mustChangePassword,
+        failedLoginCount: admin.failedLoginCount,
+        lockedUntil: admin.lockedUntil,
+        lastLoginAt: admin.lastLoginAt,
+        lastLoginIp: admin.lastLoginIp,
+        activeSessionsCount: admin.sessions.length,
+        createdAt: admin.createdAt,
+        createdBy: admin.createdBy,
+      })),
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.max(1, Math.ceil(total / limit)),
+      },
     };
   };
 
-  // 2. GET admin-users/:id
-  const getAdminUserById = async (request: FastifyRequest) => {
+  const getAdminUserById = async (request: any) => {
+    ensureSuperAdmin(request.adminUser!.role);
+
     const { id } = request.params as { id: string };
     const admin = await prisma.adminUser.findUnique({
-      where: { id }
+      where: { id },
+      include: {
+        sessions: {
+          orderBy: { updatedAt: 'desc' },
+          take: 20,
+        },
+        securityAuditLogs: {
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+        },
+      },
     });
+
     if (!admin) {
       throw new ApiError(404, 'NOT_FOUND', 'Admin user not found');
     }
+
     return {
       data: {
         id: admin.id,
+        name: admin.name,
         email: admin.email,
         role: admin.role,
-        isActive: admin.isActive,
-        createdAt: admin.createdAt
-      }
+        status: admin.status,
+        mustChangePassword: admin.mustChangePassword,
+        failedLoginCount: admin.failedLoginCount,
+        lockedUntil: admin.lockedUntil,
+        lastLoginAt: admin.lastLoginAt,
+        lastLoginIp: admin.lastLoginIp,
+        createdAt: admin.createdAt,
+        sessions: admin.sessions,
+        securityHistory: admin.securityAuditLogs,
+      },
     };
   };
 
-  // 3. POST admin-users
-  const createAdminUser = async (request: FastifyRequest) => {
+  const createAdminUser = async (request: any, reply: any) => {
     const actor = request.adminUser!;
+    ensureSuperAdmin(actor.role);
+
     const body = request.body as z.infer<typeof createAdminSchema>;
-
-    // Guardrail: Role assignment requires authorization
-    const newRole = body.role;
-    if (newRole === 'SUPER_ADMIN' || newRole === 'ADMIN') {
-      const canChange = actor.role === 'SUPER_ADMIN' || (actor.role === 'ADMIN' && hasPermission(actor.role, 'roles.update'));
-      if (!canChange) {
-        throw new ApiError(403, 'FORBIDDEN', 'Insufficient permissions to assign SUPER_ADMIN or ADMIN roles');
-      }
-    }
-
-    const existing = await prisma.adminUser.findUnique({ where: { email: body.email } });
+    const email = normalizeEmail(body.email);
+    const existing = await prisma.adminUser.findUnique({ where: { email } });
     if (existing) {
-      throw new ApiError(409, 'CONFLICT', 'Email already in use');
+      throw new ApiError(409, 'CONFLICT', 'Email already in use.');
     }
 
     const passwordHash = await bcrypt.hash(body.password, 12);
     const admin = await prisma.adminUser.create({
       data: {
-        email: body.email,
+        name: body.name.trim(),
+        email,
         passwordHash,
         role: body.role,
-        isActive: body.isActive
-      }
+        status: body.status,
+        mustChangePassword: body.mustChangePassword,
+        createdById: actor.id,
+      },
     });
 
-    return {
+    return reply.status(201).send({
       data: {
         id: admin.id,
+        name: admin.name,
         email: admin.email,
         role: admin.role,
-        isActive: admin.isActive
-      }
-    };
-  };
-
-  // 4. PATCH admin-users/:id
-  const updateAdminUser = async (request: FastifyRequest) => {
-    const { id } = request.params as { id: string };
-    const actor = request.adminUser!;
-    const body = request.body as z.infer<typeof updateAdminSchema>;
-
-    const target = await prisma.adminUser.findUnique({ where: { id } });
-    if (!target) {
-      throw new ApiError(404, 'NOT_FOUND', 'Admin user not found');
-    }
-
-    // Guardrail: User cannot change their own role or status
-    if (target.id === actor.id) {
-      if (body.role && body.role !== target.role) {
-        throw new ApiError(403, 'FORBIDDEN', 'You cannot change your own role');
-      }
-      if (body.isActive !== undefined && body.isActive !== target.isActive) {
-        throw new ApiError(403, 'FORBIDDEN', 'You cannot suspend or change your own active status');
-      }
-    }
-
-    // Guardrail: Last active SUPER_ADMIN cannot be suspended or changed to another role
-    if (target.role === 'SUPER_ADMIN') {
-      const isChangingRole = body.role && body.role !== 'SUPER_ADMIN';
-      const isSuspending = body.isActive === false && target.isActive === true;
-      if (isChangingRole || isSuspending) {
-        const superAdminCount = await prisma.adminUser.count({
-          where: { role: 'SUPER_ADMIN', isActive: true }
-        });
-        if (superAdminCount <= 1) {
-          throw new ApiError(403, 'FORBIDDEN', 'Cannot modify the last active SUPER_ADMIN');
-        }
-      }
-    }
-
-    // Guardrail: Role change requires authorization
-    if (body.role && body.role !== target.role) {
-      const canChange = actor.role === 'SUPER_ADMIN' || (actor.role === 'ADMIN' && hasPermission(actor.role, 'roles.update'));
-      if (!canChange) {
-        throw new ApiError(403, 'FORBIDDEN', 'Insufficient permissions to change user role');
-      }
-    }
-
-    if (body.email && body.email !== target.email) {
-      const existing = await prisma.adminUser.findUnique({ where: { email: body.email } });
-      if (existing) {
-        throw new ApiError(409, 'CONFLICT', 'Email already in use');
-      }
-    }
-
-    const updated = await prisma.adminUser.update({
-      where: { id },
-      data: {
-        email: body.email,
-        role: body.role,
-        isActive: body.isActive
-      }
-    });
-
-    return {
-      data: {
-        id: updated.id,
-        email: updated.email,
-        role: updated.role,
-        isActive: updated.isActive
-      }
-    };
-  };
-
-  // 5. DELETE admin-users/:id
-  const deleteAdminUser = async (request: FastifyRequest) => {
-    const { id } = request.params as { id: string };
-    const actor = request.adminUser!;
-
-    // Guardrail: A user cannot delete their own account
-    if (id === actor.id) {
-      throw new ApiError(403, 'FORBIDDEN', 'You cannot delete your own account');
-    }
-
-    const target = await prisma.adminUser.findUnique({ where: { id } });
-    if (!target) {
-      // Check if target is a pending invitation
-      const invitation = await prisma.adminInvitation.findUnique({ where: { id } });
-      if (invitation) {
-        await prisma.adminInvitation.delete({ where: { id } });
-        return { success: true, message: 'Invitation deleted successfully' };
-      }
-      throw new ApiError(404, 'NOT_FOUND', 'Admin user not found');
-    }
-
-    // Guardrail: The last active SUPER_ADMIN cannot be deleted
-    if (target.role === 'SUPER_ADMIN') {
-      const superAdminCount = await prisma.adminUser.count({
-        where: { role: 'SUPER_ADMIN', isActive: true }
-      });
-      if (superAdminCount <= 1) {
-        throw new ApiError(403, 'FORBIDDEN', 'Cannot delete the last active SUPER_ADMIN');
-      }
-    }
-
-    await prisma.adminUser.delete({ where: { id } });
-
-    return {
-      success: true,
-      message: 'Admin user deleted successfully'
-    };
-  };
-
-  // 6. PATCH admin-users/:id/status
-  const toggleAdminUserStatus = async (request: FastifyRequest) => {
-    const { id } = request.params as { id: string };
-    const actor = request.adminUser!;
-    const { isActive } = request.body as z.infer<typeof toggleStatusSchema>;
-
-    const target = await prisma.adminUser.findUnique({ where: { id } });
-    if (!target) {
-      throw new ApiError(404, 'NOT_FOUND', 'Admin user not found');
-    }
-
-    // Guardrail: A user cannot suspend their own account
-    if (target.id === actor.id && !isActive) {
-      throw new ApiError(403, 'FORBIDDEN', 'You cannot suspend your own account');
-    }
-
-    // Guardrail: The last active SUPER_ADMIN cannot be suspended
-    if (target.role === 'SUPER_ADMIN' && !isActive) {
-      const superAdminCount = await prisma.adminUser.count({
-        where: { role: 'SUPER_ADMIN', isActive: true }
-      });
-      if (superAdminCount <= 1) {
-        throw new ApiError(403, 'FORBIDDEN', 'Cannot suspend the last active SUPER_ADMIN');
-      }
-    }
-
-    const updated = await prisma.adminUser.update({
-      where: { id },
-      data: { isActive }
-    });
-
-    return {
-      data: {
-        id: updated.id,
-        email: updated.email,
-        role: updated.role,
-        isActive: updated.isActive
-      }
-    };
-  };
-
-  // 7. POST admin-users/invite
-  const inviteAdminUser = async (request: FastifyRequest) => {
-    const actor = request.adminUser!;
-    const body = request.body as z.infer<typeof inviteAdminSchema>;
-
-    // Guardrail: Role assignment authorization
-    const assignedRole = body.role;
-    if (assignedRole === 'SUPER_ADMIN' || assignedRole === 'ADMIN') {
-      const canChange = actor.role === 'SUPER_ADMIN' || (actor.role === 'ADMIN' && hasPermission(actor.role, 'roles.update'));
-      if (!canChange) {
-        throw new ApiError(403, 'FORBIDDEN', 'Insufficient privileges to invite SUPER_ADMIN or ADMIN roles');
-      }
-    }
-
-    // Check if user already exists
-    const existingUser = await prisma.adminUser.findUnique({ where: { email: body.email } });
-    if (existingUser) {
-      throw new ApiError(409, 'CONFLICT', 'Admin user with this email already exists');
-    }
-
-    const inviteToken = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days expiration
-
-    const invitation = await prisma.adminInvitation.upsert({
-      where: { email: body.email },
-      update: {
-        role: body.role,
-        token: inviteToken,
-        invitedById: actor.id,
-        expiresAt
+        status: admin.status,
+        mustChangePassword: admin.mustChangePassword,
       },
-      create: {
-        email: body.email,
-        role: body.role,
-        token: inviteToken,
-        invitedById: actor.id,
-        expiresAt
+    });
+  };
+
+  const updateAdminUser = async (request: any) => {
+    const actor = request.adminUser!;
+    ensureSuperAdmin(actor.role);
+
+    const { id } = request.params as { id: string };
+    const body = request.body as z.infer<typeof updateAdminSchema>;
+    const target = await ensureTargetAdminExists(id);
+
+    if (body.role && target.id === actor.id && target.role === AdminRole.SUPER_ADMIN && body.role !== AdminRole.SUPER_ADMIN) {
+      const count = await countActiveSuperAdmins();
+      if (count <= 1) {
+        throw new ApiError(403, 'FORBIDDEN', 'Cannot self-demote the final active super admin.');
       }
+    }
+
+    if (
+      body.role &&
+      target.role === AdminRole.SUPER_ADMIN &&
+      body.role !== AdminRole.SUPER_ADMIN &&
+      target.status === AdminUserStatus.ACTIVE
+    ) {
+      const count = await countActiveSuperAdmins();
+      if (count <= 1) {
+        throw new ApiError(403, 'FORBIDDEN', 'Cannot demote the final active super admin.');
+      }
+    }
+
+    const updated = await prisma.adminUser.update({
+      where: { id },
+      data: {
+        ...(body.name ? { name: body.name.trim() } : {}),
+        ...(body.role ? { role: body.role } : {}),
+      },
     });
 
     return {
       data: {
-        id: invitation.id,
-        email: invitation.email,
-        role: invitation.role,
-        token: invitation.token,
-        expiresAt: invitation.expiresAt
+        id: updated.id,
+        name: updated.name,
+        email: updated.email,
+        role: updated.role,
+        status: updated.status,
+      },
+    };
+  };
+
+  const updateAdminStatus = async (request: any) => {
+    const actor = request.adminUser!;
+    ensureSuperAdmin(actor.role);
+
+    const { id } = request.params as { id: string };
+    const { status } = request.body as z.infer<typeof updateStatusSchema>;
+    const target = await ensureTargetAdminExists(id);
+
+    if (target.role === AdminRole.SUPER_ADMIN && status !== AdminUserStatus.ACTIVE && target.status === AdminUserStatus.ACTIVE) {
+      const count = await countActiveSuperAdmins();
+      if (count <= 1) {
+        throw new ApiError(403, 'FORBIDDEN', 'Cannot disable the final active super admin.');
       }
-    };
-  };
+    }
 
-  // 8. GET admin-roles
-  const getAdminRoles = async () => {
-    const counts = await prisma.adminUser.groupBy({
-      by: ['role'],
-      _count: { _all: true }
+    const updated = await prisma.adminUser.update({
+      where: { id },
+      data: { status },
     });
 
-    const roles = Object.keys(adminPermissions).map((role) => {
-      const countItem = counts.find((c) => c.role === role);
-      const count = countItem?._count._all || 0;
-      return {
-        id: `ROL-${role}`,
-        name: role.split('_').map(s => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()).join(' '),
-        role: role,
-        desc: role === 'SUPER_ADMIN' ? 'Full access to all modules and configurations' :
-              role === 'ADMIN' ? 'Full access except security rules and last Super Admin deletion' :
-              role === 'MANAGER' ? 'Operational data access. No admin security edits.' :
-              role === 'SUPPORT' ? 'Read-only access to users, merchants, payments, transactions' :
-              role === 'AUDITOR' ? 'Read-only access to logs and analytics' :
-              'Developer technical configurations access',
-        count: `${count} user${count === 1 ? '' : 's'}`,
-        status: 'Active',
-        date: '2026-01-01'
-      };
-    });
+    if (status !== AdminUserStatus.ACTIVE) {
+      await revokeAllAdminSessions(updated.id);
+    }
 
-    return { data: roles };
-  };
-
-  // 9. GET admin-permissions
-  const getAdminPermissions = async () => {
     return {
-      data: Object.entries(adminPermissions).map(([role, permissions]) => ({
-        role,
-        permissions
-      }))
+      data: {
+        id: updated.id,
+        status: updated.status,
+      },
     };
   };
 
-  // --- Register routes with/without /admin prefix ---
+  const revokeSessions = async (request: any, reply: any) => {
+    ensureSuperAdmin(request.adminUser!.role);
+    const { id } = request.params as { id: string };
+    await ensureTargetAdminExists(id);
+    await revokeAllAdminSessions(id);
+    return reply.status(200).send({ success: true });
+  };
 
-  // GET admin-users
-  app.get('/admin-users', { preHandler: [requireAdminAuth, requirePermission('admin_users.read')] }, getAdminUsers);
-  app.get('/admin/admin-users', { preHandler: [requireAdminAuth, requirePermission('admin_users.read')] }, getAdminUsers);
+  const issueResetToken = async (request: any, reply: any) => {
+    ensureSuperAdmin(request.adminUser!.role);
+    const { adminUserId } = request.body as z.infer<typeof credentialIssueSchema>;
+    await ensureTargetAdminExists(adminUserId);
 
-  // GET admin-users/:id
-  app.get('/admin-users/:id', { preHandler: [requireAdminAuth, requirePermission('admin_users.read')] }, getAdminUserById);
-  app.get('/admin/admin-users/:id', { preHandler: [requireAdminAuth, requirePermission('admin_users.read')] }, getAdminUserById);
+    const token = await createPasswordResetToken({
+      actorAdminId: request.adminUser!.id,
+      targetAdminId: adminUserId,
+      ipAddress: request.ip,
+    });
 
-  // POST admin-users
-  app.post('/admin-users', { preHandler: [requireAdminAuth, requirePermission('admin_users.create')], preValidation: validateBody(createAdminSchema) }, createAdminUser);
-  app.post('/admin/admin-users', { preHandler: [requireAdminAuth, requirePermission('admin_users.create')], preValidation: validateBody(createAdminSchema) }, createAdminUser);
+    return reply.status(201).send({ success: true, data: token });
+  };
 
-  // PATCH admin-users/:id
-  app.patch('/admin-users/:id', { preHandler: [requireAdminAuth, requirePermission('admin_users.update')], preValidation: validateBody(updateAdminSchema) }, updateAdminUser);
-  app.patch('/admin/admin-users/:id', { preHandler: [requireAdminAuth, requirePermission('admin_users.update')], preValidation: validateBody(updateAdminSchema) }, updateAdminUser);
+  const issueTemporaryPasswordAction = async (request: any, reply: any) => {
+    ensureSuperAdmin(request.adminUser!.role);
+    const { adminUserId } = request.body as z.infer<typeof credentialIssueSchema>;
+    await ensureTargetAdminExists(adminUserId);
 
-  // DELETE admin-users/:id
-  app.delete('/admin-users/:id', { preHandler: [requireAdminAuth, requirePermission('admin_users.delete')] }, deleteAdminUser);
-  app.delete('/admin/admin-users/:id', { preHandler: [requireAdminAuth, requirePermission('admin_users.delete')] }, deleteAdminUser);
+    const result = await issueTemporaryPassword({
+      actorAdminId: request.adminUser!.id,
+      targetAdminId: adminUserId,
+      ipAddress: request.ip,
+    });
 
-  // PATCH admin-users/:id/status
-  app.patch('/admin-users/:id/status', { preHandler: [requireAdminAuth, requirePermission('admin_users.update')], preValidation: validateBody(toggleStatusSchema) }, toggleAdminUserStatus);
-  app.patch('/admin/admin-users/:id/status', { preHandler: [requireAdminAuth, requirePermission('admin_users.update')], preValidation: validateBody(toggleStatusSchema) }, toggleAdminUserStatus);
+    return reply.status(201).send({ success: true, data: result });
+  };
 
-  // POST admin-users/invite
-  app.post('/admin-users/invite', { preHandler: [requireAdminAuth, requirePermission('admin_users.invite')], preValidation: validateBody(inviteAdminSchema) }, inviteAdminUser);
-  app.post('/admin/admin-users/invite', { preHandler: [requireAdminAuth, requirePermission('admin_users.invite')], preValidation: validateBody(inviteAdminSchema) }, inviteAdminUser);
-
-  // GET admin-roles
-  app.get('/admin-roles', { preHandler: [requireAdminAuth, requirePermission('roles.read')] }, getAdminRoles);
-  app.get('/admin/admin-roles', { preHandler: [requireAdminAuth, requirePermission('roles.read')] }, getAdminRoles);
-
-  // GET admin-permissions
-  app.get('/admin-permissions', { preHandler: [requireAdminAuth, requirePermission('roles.read')] }, getAdminPermissions);
-  app.get('/admin/admin-permissions', { preHandler: [requireAdminAuth, requirePermission('roles.read')] }, getAdminPermissions);
+  app.get('/admin-users', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateQuery(adminListQuerySchema) }, getAdminUsers);
+  app.get('/admin/admin-users', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateQuery(adminListQuerySchema) }, getAdminUsers);
+  app.get('/admin-users/:id', { preHandler: [requireAdminAuth, requireSuperAdmin] }, getAdminUserById);
+  app.get('/admin/admin-users/:id', { preHandler: [requireAdminAuth, requireSuperAdmin] }, getAdminUserById);
+  app.post('/admin-users', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(createAdminSchema) }, createAdminUser);
+  app.post('/admin/admin-users', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(createAdminSchema) }, createAdminUser);
+  app.patch('/admin-users/:id', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(updateAdminSchema) }, updateAdminUser);
+  app.patch('/admin/admin-users/:id', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(updateAdminSchema) }, updateAdminUser);
+  app.patch('/admin-users/:id/status', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(updateStatusSchema) }, updateAdminStatus);
+  app.patch('/admin/admin-users/:id/status', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(updateStatusSchema) }, updateAdminStatus);
+  app.post('/admin-users/:id/revoke-sessions', { preHandler: [requireAdminAuth, requireSuperAdmin] }, revokeSessions);
+  app.post('/admin/admin-users/:id/revoke-sessions', { preHandler: [requireAdminAuth, requireSuperAdmin] }, revokeSessions);
+  app.post('/admin-users/password-reset-token', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(credentialIssueSchema) }, issueResetToken);
+  app.post('/admin/admin-users/password-reset-token', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(credentialIssueSchema) }, issueResetToken);
+  app.post('/admin-users/temporary-password', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(credentialIssueSchema) }, issueTemporaryPasswordAction);
+  app.post('/admin/admin-users/temporary-password', { preHandler: [requireAdminAuth, requireSuperAdmin], preValidation: validateBody(credentialIssueSchema) }, issueTemporaryPasswordAction);
 };

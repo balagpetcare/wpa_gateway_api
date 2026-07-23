@@ -1,143 +1,273 @@
-import bcrypt from 'bcrypt';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { prisma } from '../../config/prisma.js';
-import { validateBody } from '../../utils/validation.js';
-import { ApiError } from '../../utils/errors.js';
-import { requireAdminAuth } from '../../middleware/admin-auth.js';
-import { adminPermissions } from '../../utils/permissions.js';
 
-const loginSchema = z.object({
-  emailOrUsername: z.string().min(1, 'Email or username is required'),
-  password: z.string().min(1, 'Password is required')
-});
+import { requireAdminAuth } from '../../middleware/admin-auth.js';
+import { ApiError } from '../../utils/errors.js';
+import { validateBody } from '../../utils/validation.js';
+import {
+  changeAdminPassword,
+  consumePasswordResetToken,
+  createPasswordResetToken,
+  getAuthenticatedAdmin,
+  issueTemporaryPassword,
+  revokeAllAdminSessions,
+  revokeCurrentAdminSession,
+  rotateAdminRefreshToken,
+  loginAdminWithPassword,
+} from './admin-auth-service.js';
+
+const loginSchema = z
+  .object({
+    email: z.string().email('Enter a valid email address.').optional(),
+    emailOrUsername: z.string().trim().min(1, 'Email or username is required').optional(),
+    password: z.string().min(1, 'Password is required'),
+    rememberMe: z.boolean().optional().default(false),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.email && !value.emailOrUsername) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['emailOrUsername'],
+        message: 'Email or username is required',
+      });
+    }
+  });
 
 const refreshSchema = z.object({
-  refresh_token: z.string().min(20)
+  refresh_token: z.string().min(20),
 });
 
-const deriveNameFromEmail = (email: string): string => {
-  const namePart = email.split('@')[0] ?? '';
-  return namePart.split(/[._-]/).map((s) => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
-};
+const logoutSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+});
+
+const resetTokenSchema = z.object({
+  adminUserId: z.string().min(1),
+});
+
+const consumeResetTokenSchema = z.object({
+  token: z.string().min(10),
+  newPassword: z.string().min(12),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(12),
+});
 
 export const authRoutes: FastifyPluginAsync = async (app) => {
-  app.post('/admin/auth/login', {
-    config: {
-      rateLimit: {
-        max: 5,
-        timeWindow: '15 minutes',
-        keyGenerator: (request) => request.ip
-      }
+  app.post(
+    '/admin/auth/login',
+    {
+      config: {
+        rateLimit: {
+          max: 8,
+          timeWindow: '15 minutes',
+          keyGenerator: (request) => {
+            const body = request.body as { email?: string; emailOrUsername?: string } | undefined;
+            const identifier = body?.emailOrUsername ?? body?.email ?? '';
+            return `${request.ip}:${String(identifier).toLowerCase()}`;
+          },
+        },
+      },
+      preValidation: validateBody(loginSchema),
     },
-    preValidation: validateBody(loginSchema)
-  }, async (request, reply) => {
-    const { emailOrUsername, password } = request.body as z.infer<typeof loginSchema>;
+    async (request, reply) => {
+      const { email, emailOrUsername, password, rememberMe } = request.body as z.infer<typeof loginSchema>;
+      const result = await loginAdminWithPassword({
+        emailOrUsername: emailOrUsername ?? email ?? '',
+        password,
+        rememberMe,
+        request,
+      });
 
-    // Support both email and username (email prefix before @)
-    const admin = emailOrUsername.includes('@')
-      ? await prisma.adminUser.findUnique({ where: { email: emailOrUsername } })
-      : await prisma.adminUser.findFirst({ where: { email: { startsWith: `${emailOrUsername}@` } } });
-
-    if (!admin || !admin.isActive || !(await bcrypt.compare(password, admin.passwordHash))) {
-      throw new ApiError(401, 'UNAUTHORIZED', 'Invalid credentials');
-    }
-
-    const accessToken = await reply.jwtSign({
-      sub: admin.id,
-      email: admin.email,
-      role: admin.role
-    });
-
-    const refreshToken = await reply.jwtSign(
-      { sub: admin.id, type: 'refresh' },
-      { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
-    );
-
-    await prisma.adminUser.update({
-      where: { id: admin.id },
-      data: { refreshTokenHash: await bcrypt.hash(refreshToken, 12) }
-    });
-
-    const permissions = (adminPermissions[admin.role as keyof typeof adminPermissions] as readonly string[]) ?? [];
-
-    return reply.status(200).send({
-      success: true,
-      token: accessToken,
-      refresh_token: refreshToken,
-      user: {
-        id: admin.id,
-        name: deriveNameFromEmail(admin.email),
-        email: admin.email,
-        role: admin.role,
-        permissions
-      }
-    });
-  });
-
-  app.get('/admin/auth/me', {
-    preHandler: [requireAdminAuth]
-  }, async (request) => {
-    const { id, email, role } = request.adminUser!;
-    const permissions = (adminPermissions[role as keyof typeof adminPermissions] as readonly string[]) ?? [];
-
-    return {
-      success: true,
-      user: {
-        id,
-        name: deriveNameFromEmail(email),
-        email,
-        role,
-        permissions
-      }
-    };
-  });
-
-  app.post('/admin/auth/logout', {
-    preHandler: [requireAdminAuth]
-  }, async (request, reply) => {
-    await prisma.adminUser.update({
-      where: { id: request.adminUser!.id },
-      data: { refreshTokenHash: null }
-    });
-
-    return reply.status(200).send({ success: true });
-  });
-
-  app.post('/admin/auth/refresh', {
-    config: {
-      rateLimit: {
-        max: 5,
-        timeWindow: '15 minutes',
-        keyGenerator: (request) => request.ip
-      }
+      return reply.status(200).send({
+        success: true,
+        token: result.accessToken,
+        refresh_token: result.refreshToken,
+        expires_at: result.accessTokenExpiresAt,
+        refresh_expires_at: result.refreshTokenExpiresAt,
+        session_id: result.sessionId,
+        user: result.user,
+      });
     },
-    preValidation: validateBody(refreshSchema)
-  }, async (request, reply) => {
-    const { refresh_token: refreshToken } = request.body as z.infer<typeof refreshSchema>;
-    const decoded = await app.jwt.verify<{ sub: string; type?: string }>(refreshToken);
+  );
 
-    if (decoded.type !== 'refresh') {
-      throw new ApiError(401, 'UNAUTHORIZED', 'Invalid refresh token');
-    }
+  app.get(
+    '/admin/auth/me',
+    {
+      preHandler: [requireAdminAuth],
+    },
+    async (request) => {
+      const sessionId = (request.user as { sid?: string } | undefined)?.sid;
+      if (!sessionId) {
+        throw new ApiError(401, 'UNAUTHORIZED', 'Admin authentication failed');
+      }
 
-    const admin = await prisma.adminUser.findUnique({
-      where: { id: decoded.sub }
-    });
+      const admin = await getAuthenticatedAdmin({
+        sub: request.adminUser!.id,
+        sid: sessionId,
+        email: request.adminUser!.email,
+        role: request.adminUser!.role,
+        tv: (request.user as { tv?: number }).tv ?? 0,
+      });
 
-    if (!admin?.refreshTokenHash || !(await bcrypt.compare(refreshToken, admin.refreshTokenHash))) {
-      throw new ApiError(401, 'UNAUTHORIZED', 'Invalid refresh token');
-    }
+      return {
+        success: true,
+        user: {
+          id: admin.id,
+          name: admin.name,
+          email: admin.email,
+          role: admin.role,
+          status: admin.status,
+          mustChangePassword: admin.mustChangePassword,
+        },
+      };
+    },
+  );
 
-    const accessToken = await reply.jwtSign({
-      sub: admin.id,
-      email: admin.email,
-      role: admin.role
-    });
+  app.post(
+    '/admin/auth/logout',
+    {
+      preHandler: [requireAdminAuth],
+    },
+    async (request, reply) => {
+      const body = logoutSchema.safeParse(request.body).success ? (request.body as z.infer<typeof logoutSchema>) : {};
+      await revokeCurrentAdminSession(request.adminUser!.id, body.sessionId ?? null);
+      return reply.status(200).send({ success: true });
+    },
+  );
 
-    return {
-      success: true,
-      token: accessToken
-    };
-  });
+  app.post(
+    '/admin/auth/logout-all',
+    {
+      preHandler: [requireAdminAuth],
+    },
+    async (request, reply) => {
+      await revokeAllAdminSessions(request.adminUser!.id);
+      return reply.status(200).send({ success: true });
+    },
+  );
+
+  app.post(
+    '/admin/auth/refresh',
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '15 minutes',
+          keyGenerator: (request) => request.ip,
+        },
+      },
+      preValidation: validateBody(refreshSchema),
+    },
+    async (request) => {
+      const { refresh_token: refreshToken } = request.body as z.infer<typeof refreshSchema>;
+      const result = await rotateAdminRefreshToken(refreshToken, request);
+
+      return {
+        success: true,
+        token: result.accessToken,
+        refresh_token: result.refreshToken,
+        expires_at: result.accessTokenExpiresAt,
+        refresh_expires_at: result.refreshTokenExpiresAt,
+        session_id: result.sessionId,
+        user: result.user,
+      };
+    },
+  );
+
+  app.post(
+    '/admin/auth/change-password',
+    {
+      preHandler: [requireAdminAuth],
+      preValidation: validateBody(changePasswordSchema),
+    },
+    async (request) => {
+      const sessionId = (request.user as { sid?: string } | undefined)?.sid;
+      if (!sessionId) {
+        throw new ApiError(401, 'UNAUTHORIZED', 'Admin authentication failed');
+      }
+
+      const { currentPassword, newPassword } = request.body as z.infer<typeof changePasswordSchema>;
+      const result = await changeAdminPassword({
+        adminId: request.adminUser!.id,
+        sessionId,
+        currentPassword,
+        newPassword,
+        request,
+      });
+
+      return {
+        success: true,
+        token: result.accessToken,
+        refresh_token: result.refreshToken,
+        expires_at: result.accessTokenExpiresAt,
+        refresh_expires_at: result.refreshTokenExpiresAt,
+        session_id: result.sessionId,
+        user: result.user,
+      };
+    },
+  );
+
+  app.post(
+    '/admin/auth/reset-password',
+    {
+      preValidation: validateBody(consumeResetTokenSchema),
+    },
+    async (request, reply) => {
+      const { token, newPassword } = request.body as z.infer<typeof consumeResetTokenSchema>;
+      await consumePasswordResetToken({
+        token,
+        newPassword,
+        ipAddress: request.ip,
+      });
+
+      return reply.status(200).send({ success: true });
+    },
+  );
+
+  app.post(
+    '/admin/auth/password-reset-tokens',
+    {
+      preHandler: [requireAdminAuth],
+      preValidation: validateBody(resetTokenSchema),
+    },
+    async (request, reply) => {
+      if (request.adminUser!.role !== 'SUPER_ADMIN') {
+        throw new ApiError(403, 'FORBIDDEN', 'Only super admins can issue password reset tokens.');
+      }
+
+      const { adminUserId } = request.body as z.infer<typeof resetTokenSchema>;
+      const token = await createPasswordResetToken({
+        actorAdminId: request.adminUser!.id,
+        targetAdminId: adminUserId,
+        ipAddress: request.ip,
+      });
+
+      return reply.status(201).send({ success: true, data: token });
+    },
+  );
+
+  app.post(
+    '/admin/auth/temporary-password',
+    {
+      preHandler: [requireAdminAuth],
+      preValidation: validateBody(resetTokenSchema),
+    },
+    async (request, reply) => {
+      if (request.adminUser!.role !== 'SUPER_ADMIN') {
+        throw new ApiError(403, 'FORBIDDEN', 'Only super admins can issue temporary passwords.');
+      }
+
+      const { adminUserId } = request.body as z.infer<typeof resetTokenSchema>;
+      const result = await issueTemporaryPassword({
+        actorAdminId: request.adminUser!.id,
+        targetAdminId: adminUserId,
+        ipAddress: request.ip,
+      });
+
+      return reply.status(201).send({ success: true, data: result });
+    },
+  );
 };

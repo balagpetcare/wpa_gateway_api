@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import bcrypt from 'bcrypt';
-import { PrismaClient, AdminRole, CredentialScope, MerchantEnvironment, MerchantStatus, ProviderName, CoverageType, InternationalDisplayPolicy, RateSource } from '@prisma/client';
+import { PrismaClient, AdminRole, AdminUserStatus, CredentialScope, MerchantEnvironment, MerchantStatus, ProviderName, CoverageType, InternationalDisplayPolicy, RateSource } from '@prisma/client';
 import { env } from '../src/config/env.js';
 import { generateMerchantCredential, normalizeOrigin } from '../src/modules/merchants/shared.js';
 import { encryptValue } from '../src/utils/encrypt.js';
@@ -32,7 +32,8 @@ const prisma = new PrismaClient({
 });
 
 const seedConfig = {
-  adminEmail: process.env.SEED_ADMIN_EMAIL ?? 'admin@worldpetsassociation.com',
+  adminName: process.env.GATEWAY_ADMIN_BOOTSTRAP_NAME ?? process.env.SEED_ADMIN_NAME ?? 'Gateway Super Admin',
+  adminEmail: process.env.GATEWAY_ADMIN_BOOTSTRAP_EMAIL ?? process.env.SEED_ADMIN_EMAIL ?? 'admin@worldpetsassociation.com',
   adminPassword: process.env.SEED_ADMIN_PASSWORD ?? 'WpaAdmin123!',
   merchantName: 'furtail.app',
   merchantBusinessName: 'Furtail App LLC',
@@ -307,16 +308,21 @@ const main = async () => {
   const admin = await prisma.adminUser.upsert({
     where: { email: seedConfig.adminEmail },
     update: {
+      name: seedConfig.adminName,
       passwordHash: adminPasswordHash,
       role: AdminRole.SUPER_ADMIN,
-      isActive: true,
-      refreshTokenHash: null
+      status: AdminUserStatus.ACTIVE,
+      mustChangePassword: false,
+      failedLoginCount: 0,
+      lockedUntil: null
     },
     create: {
+      name: seedConfig.adminName,
       email: seedConfig.adminEmail,
       passwordHash: adminPasswordHash,
       role: AdminRole.SUPER_ADMIN,
-      isActive: true
+      status: AdminUserStatus.ACTIVE,
+      mustChangePassword: false
     }
   });
 

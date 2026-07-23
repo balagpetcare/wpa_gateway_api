@@ -299,7 +299,7 @@ type OverviewRefundRow = {
   refundCount: number;
 };
 
-const RESTRICTED_ROLES = new Set(['SUPPORT', 'AUDITOR', 'DEVELOPER']);
+const RESTRICTED_ROLES = new Set(['VIEWER']);
 
 const mergeOverviewRows = (transactions: OverviewTxnRow[], refunds: OverviewRefundRow[]) => {
   const rows = new Map<string, OverviewGroupRow>();

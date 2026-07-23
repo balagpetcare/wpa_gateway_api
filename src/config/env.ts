@@ -1,6 +1,25 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
+const optionalNonEmptyString = () =>
+  z.preprocess((value) => {
+    if (typeof value !== 'string') {
+      return value;
+    }
+
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  }, z.string().min(1).optional());
+
+const optionalBootstrapPassword = z.preprocess((value) => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}, z.string().min(1).optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(4000),
@@ -14,6 +33,21 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default('1h'),
   JWT_REFRESH_SECRET: z.string().min(1, 'JWT_REFRESH_SECRET must not be empty'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  GATEWAY_ADMIN_ACCESS_TOKEN_TTL: z.string().optional(),
+  GATEWAY_ADMIN_REFRESH_TOKEN_TTL: z.string().optional(),
+  GATEWAY_ADMIN_PASSWORD_RESET_TOKEN_TTL: z.string().default('15m'),
+  GATEWAY_ADMIN_LOGIN_MAX_FAILURES: z.coerce.number().int().positive().default(5),
+  GATEWAY_ADMIN_LOGIN_LOCK_MINUTES: z.coerce.number().int().positive().default(15),
+  GATEWAY_ADMIN_BOOTSTRAP_NAME: optionalNonEmptyString(),
+  GATEWAY_ADMIN_BOOTSTRAP_EMAIL: z.preprocess((value) => {
+    if (typeof value !== 'string') {
+      return value;
+    }
+
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  }, z.string().email().optional()),
+  GATEWAY_ADMIN_BOOTSTRAP_PASSWORD: optionalBootstrapPassword,
   HMAC_TIMESTAMP_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
   // Comma-separated list of origins allowed to reach /admin/* endpoints
   ADMIN_ORIGINS: z.string().default('http://localhost:3000'),
@@ -35,14 +69,7 @@ const envSchema = z.object({
   CENTRAL_AUTH_BASE_URL: z.string().url().optional(),
   CENTRAL_COMMUNICATION_API_URL: z.string().url().optional(),
   CENTRAL_CLIENT_ID: z.string().min(1).optional(),
-  CENTRAL_SERVICE_API_KEY: z.string().min(1).optional(),
-  // Global Super Admin, Stage 1: shared secret with WPA Central Auth
-  // (wpa-auth-api), used only to verify admin-scoped Central Auth tokens in
-  // requireAdminAuth. Independent of JWT_SECRET (the gateway's own local
-  // admin session secret, unchanged). Optional so the gateway still boots
-  // with only local admin auth if this is not yet configured.
-  CENTRAL_AUTH_JWT_SECRET: z.string().min(1).optional(),
-  CENTRAL_AUTH_ISSUER: z.string().min(1).optional()
+  CENTRAL_SERVICE_API_KEY: z.string().min(1).optional()
 });
 
 export const env = envSchema.parse(process.env);

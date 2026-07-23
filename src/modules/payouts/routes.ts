@@ -64,7 +64,7 @@ const payoutActionBodySchema = z.object({
   metadata: payoutMetadataSchema
 });
 
-const RESTRICTED_ROLES = new Set(['SUPPORT', 'AUDITOR', 'DEVELOPER']);
+const RESTRICTED_ROLES = new Set(['VIEWER']);
 const RESERVE_STATUSES: PayoutStatus[] = [
   PayoutStatus.PENDING_REVIEW,
   PayoutStatus.APPROVED,

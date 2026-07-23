@@ -26,7 +26,7 @@ const listQuerySchema = z.object({
 });
 
 // Roles that are not SUPER_ADMIN or ADMIN must supply a merchantId filter
-const RESTRICTED_ROLES = new Set(['SUPPORT', 'AUDITOR', 'DEVELOPER']);
+const RESTRICTED_ROLES = new Set(['VIEWER']);
 
 export const transactionRoutes: FastifyPluginAsync = async (app) => {
   app.get(

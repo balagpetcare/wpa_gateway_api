@@ -88,10 +88,15 @@ enum CredentialTestStatus {
 enum AdminRole {
   SUPER_ADMIN
   ADMIN
-  MANAGER
-  SUPPORT
-  AUDITOR
-  DEVELOPER
+  FINANCE_ADMIN
+  OPERATIONS_ADMIN
+  VIEWER
+}
+
+enum AdminUserStatus {
+  ACTIVE
+  SUSPENDED
+  DISABLED
 }
 
 enum AuditActorType {
@@ -174,17 +179,26 @@ enum PayoutMethod {
 
 model AdminUser {
   id                        String               @id @default(cuid())
+  name                      String
   email                     String               @unique
   passwordHash              String               @map("password_hash")
-  /// WPA Central Auth user id, set only for accounts provisioned via the
-  /// Global Super Admin cross-service identity (Stage 1). Never set for
-  /// ordinary local gateway admin accounts.
-  centralUserId             String?              @unique @map("central_user_id")
   role                      AdminRole
-  isActive                  Boolean              @default(true) @map("is_active")
-  refreshTokenHash          String?              @map("refresh_token_hash")
+  status                    AdminUserStatus      @default(ACTIVE)
+  mustChangePassword        Boolean              @default(false) @map("must_change_password")
+  failedLoginCount          Int                  @default(0) @map("failed_login_count")
+  lockedUntil               DateTime?            @map("locked_until")
+  lastLoginAt               DateTime?            @map("last_login_at")
+  lastLoginIp               String?              @map("last_login_ip")
+  tokenVersion              Int                  @default(0) @map("token_version")
+  createdById               String?              @map("created_by_id")
   createdAt                 DateTime             @default(now()) @map("created_at")
   updatedAt                 DateTime             @updatedAt @map("updated_at")
+  createdBy                 AdminUser?           @relation("AdminUserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAdmins             AdminUser[]          @relation("AdminUserCreatedBy")
+  sessions                  AdminSession[]
+  passwordResetTokens       PasswordResetToken[]
+  securityAuditLogs         AdminAuditLog[]      @relation("AdminAuditTarget")
+  actorSecurityAuditLogs    AdminAuditLog[]      @relation("AdminAuditActor")
   createdCredentials        ProviderCredential[] @relation("CredentialCreatedBy")
   createdCredentialProfiles CredentialProfile[]  @relation("CredentialProfileCreatedBy")
   createdMerchantKeys       MerchantApiKey[]     @relation("MerchantApiKeyCreatedBy")
@@ -665,27 +679,56 @@ model AuditLog {
 }
 
 model AdminSession {
-  id        String   @id @default(cuid())
-  adminId   String   @map("admin_id")
-  token     String   @unique
-  ipAddress String?  @map("ip_address")
-  userAgent String?  @map("user_agent")
-  expiresAt DateTime @map("expires_at")
-  createdAt DateTime @default(now()) @map("created_at")
+  id                  String        @id @default(cuid())
+  adminId             String        @map("admin_id")
+  sessionTokenId      String        @unique @map("session_token_id")
+  refreshTokenHash    String        @map("refresh_token_hash")
+  ipAddress           String?       @map("ip_address")
+  userAgent           String?       @map("user_agent")
+  rememberMe          Boolean       @default(false) @map("remember_me")
+  expiresAt           DateTime      @map("expires_at")
+  lastUsedAt          DateTime?     @map("last_used_at")
+  revokedAt           DateTime?     @map("revoked_at")
+  replacedBySessionId String?       @map("replaced_by_session_id")
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+  admin               AdminUser     @relation(fields: [adminId], references: [id], onDelete: Cascade)
 
+  @@index([adminId, expiresAt])
+  @@index([adminId, revokedAt])
   @@map("admin_sessions")
 }
 
-model AdminInvitation {
+model PasswordResetToken {
   id          String    @id @default(cuid())
-  email       String    @unique
-  role        AdminRole
-  token       String    @unique
-  invitedById String    @map("invited_by_id")
-  expiresAt   DateTime  @map("expires_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
+  adminId      String    @map("admin_id")
+  tokenHash    String    @unique @map("token_hash")
+  expiresAt    DateTime  @map("expires_at")
+  usedAt       DateTime? @map("used_at")
+  createdById  String?   @map("created_by_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  admin        AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
 
-  @@map("admin_invitations")
+  @@index([adminId, expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model AdminAuditLog {
+  id           String     @id @default(cuid())
+  actorAdminId String?    @map("actor_admin_id")
+  targetAdminId String?   @map("target_admin_id")
+  action       String
+  entityType   String     @map("entity_type")
+  entityId     String?    @map("entity_id")
+  ipAddress    String?    @map("ip_address")
+  metadata     Json?
+  createdAt    DateTime   @default(now()) @map("created_at")
+  actorAdmin   AdminUser? @relation("AdminAuditActor", fields: [actorAdminId], references: [id], onDelete: SetNull)
+  targetAdmin  AdminUser? @relation("AdminAuditTarget", fields: [targetAdminId], references: [id], onDelete: SetNull)
+
+  @@index([actorAdminId, createdAt])
+  @@index([targetAdminId, createdAt])
+  @@map("admin_audit_logs")
 }
 
 model CountryGatewayRule {
